@@ -1,6 +1,5 @@
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio');
 const cors = require('cors');
 
 const app = express();
@@ -23,51 +22,44 @@ app.get('/api/get-image', async (req, res) => {
   try {
     const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(searchQuery)}`;
     
-    // render=true geri ekledik çünkü Trendyol resimleri JavaScript ile sonradan yüklüyor (Lazy Load)
-    const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&premium=true`;
+    // DİKKAT: device_type=desktop ekledik! Trendyol'un bize mobil siteyi değil, masaüstü siteyi vermesini zorunlu kılıyoruz.
+    const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&premium=true&device_type=desktop`;
     
-    const response = await axios.get(scraperUrl, { timeout: 45000 }); 
+    const response = await axios.get(scraperUrl, { timeout: 25000 }); 
+    const html = response.data;
     
-    const $ = cheerio.load(response.data);
-    
-    // Trendyol'un YENİ HTML yapısı için çok daha geniş kapsamlı aramalar
-    let imageUrl = 
-      $('.p-card-img').first().attr('src') || 
-      $('.image-container img').first().attr('src') || 
-      $('.product-image').first().attr('src') ||
-      $('.p-card-wrppr img').first().attr('src');
-      
-    // Eğer resim Lazy Load (sonradan yüklenen) ise data-src içinde saklanır
-    if (!imageUrl || imageUrl.includes('data:image/svg+xml') || imageUrl.includes('base64')) {
-      imageUrl = 
-        $('.p-card-img').first().attr('data-src') || 
-        $('.image-container img').first().attr('data-src') ||
-        $('.p-card-wrppr img').first().attr('data-src');
+    let imageUrl, brand, productUrl;
+
+    // 1. GÖRSELİ BUL (Regex ile gizli JSON verisinden çekiyoruz)
+    const imageMatch = html.match(/"imageUrls":\["(https:\/\/cdn\.dsmcdn\.com\/[^"]+)"/);
+    if (imageMatch && imageMatch[1]) {
+        imageUrl = imageMatch[1];
+    } else {
+        const altImageMatch = html.match(/"imageUrl":"(https:\/\/cdn\.dsmcdn\.com\/[^"]+)"/);
+        if (altImageMatch) imageUrl = altImageMatch[1];
     }
 
-    let brand = 
-      $('.prdct-desc-cntnr-ttl').first().text().trim() || 
-      $('.brand-name').first().text().trim() || 
-      $('.product-brand').first().text().trim();
-
-    let productUrl = 
-      $('.p-card-wrppr a').first().attr('href') || 
-      $('.product-card a').first().attr('href') || 
-      $('.p-card-chldrn-cntnr a').first().attr('href');
-
-    if (productUrl && !productUrl.startsWith('http')) {
-        productUrl = 'https://www.trendyol.com' + productUrl;
+    // 2. MARKAYI BUL
+    const brandMatch = html.match(/"brand":\{"id":\d+,"name":"([^"]+)"\}/);
+    if (brandMatch && brandMatch[1]) {
+        brand = brandMatch[1];
     }
 
-    if (imageUrl && !imageUrl.includes('data:image/svg+xml')) {
+    // 3. ÜRÜN LİNKİNİ BUL
+    const urlMatch = html.match(/"url":"(\/[^"]+-p-\d+[^"]*)"/);
+    if (urlMatch && urlMatch[1]) {
+        productUrl = 'https://www.trendyol.com' + urlMatch[1];
+    }
+
+    if (imageUrl) {
       res.json({ 
         imageUrl: imageUrl,
         brand: brand || undefined,
         productUrl: productUrl || undefined
       });
     } else {
-      console.log("Görsel bulunamadı. Sayfa HTML'inden bir kesit:", $('body').html().substring(0, 200));
-      res.status(404).json({ error: 'Görsel bulunamadı, Trendyol yapısı değişmiş olabilir.' });
+      console.log("Masaüstü sitesinde görsel bulunamadı. HTML Boyutu:", html.length);
+      res.status(404).json({ error: 'Görsel bulunamadı.' });
     }
 
   } catch (error) {
